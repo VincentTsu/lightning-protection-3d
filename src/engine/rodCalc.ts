@@ -33,6 +33,12 @@ export function jointMinHeight(h: number, D: number): number {
   return Math.max(0, h - D / (7 * p));
 }
 
+/** 两针之间在高度 hx 处的联合保护半宽  bx = 1.5(h0 − hx)·P */
+export function jointHalfWidth(h0: number, hx: number, p: number): number {
+  if (hx >= h0) return 0;
+  return 1.5 * (h0 - hx) * p;
+}
+
 /** 计算单针的完整保护剖面（从地面到针尖，采样 20 个高度） */
 export function rodProtectionProfile(rod: LightningRod): RodProtectionRange {
   const samples = 20;

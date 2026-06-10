@@ -1,5 +1,5 @@
 import { LightningRod, LightningWire, EnvelopeGeometry } from '../types';
-import { protectionRadius, distanceBetweenRods, jointMinHeight } from './rodCalc';
+import { protectionRadius, correctionFactor, distanceBetweenRods, jointMinHeight, jointHalfWidth } from './rodCalc';
 import { protectionWidth } from './wireCalc';
 
 // ---------------------------------------------------------------------------
@@ -166,18 +166,19 @@ export function generateRodEnvelope(
 /**
  * Generate the joint protection surface between two lightning rods.
  *
- * Per GB50064 折线法: the equivalent rod height along the line AB follows a
- * parabolic arc — `h` at each rod, dipping to `h0` at the midpoint.  At each
- * (position-along-AB, height) we extend laterally by the protection radius of
- * the local equivalent rod.  This produces a clean saddle surface.
- *
- * The full envelope for two overlapping rods = individual rod cones  +
- * this joint saddle that bridges the gap between them.
+ * Per GB50064 折线法:
+ *   1. h0 = h − D/(7p)  — lowest point of joint protection at midpoint
+ *   2. At each height y ∈ [0, h0]:
+ *        rx = protectionRadius(h, y)       — single-rod circle radius
+ *        bx = jointHalfWidth(h0, y, P)    — joint half-width
+ *   3. The cross-section is bounded by two lines at ±bx from the centreline
+ *      and the outer arcs of the two circles (outside the ±bx lines).
+ *   4. Stack these cross-sections from y=0 upward to form the 3D surface.
  */
 export function generateJointEnvelope(
   rodA: LightningRod,
   rodB: LightningRod,
-  alongSamples: number = 32,
+  ringVerts: number = 80,
   heightSamples: number = 24,
 ): EnvelopeGeometry | null {
   const D = distanceBetweenRods(rodA, rodB);
@@ -188,51 +189,71 @@ export function generateJointEnvelope(
   // Direction & perpendicular (XZ plane)
   const dx = rodB.x - rodA.x, dz = rodB.y - rodA.y;
   const ux = dx / D, uz = dz / D;
-  const nx = -uz, nz = ux; // left-hand perpendicular
+  const nx = -uz, nz = ux; // perpendicular (pointing "left")
 
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
+  const ringStart: number[] = [];
 
-  // Heff at position t ∈ [0,1] along AB: h at ends → h0 at midpoint
-  const heff = (t: number) => h - 4 * (h - h0) * (t - 0.5) * (t - 0.5);
+  for (let s = 0; s <= heightSamples; s++) {
+    const y = (s / heightSamples) * h0;
+    const rx = protectionRadius(h, y);
+    const p = correctionFactor(h);
+    const bx = jointHalfWidth(h0, y, p);
 
-  // Generate a regular grid: N+1 columns along AB  ×  M+1 rows in height
-  // Each column has (heightSamples+1) rows from y=0 to y=h.
-  // For y > heff(col) the lateral extent r=0, producing a sharp ridge.
-  const colStart: number[] = [];
+    ringStart.push(vertices.length);
 
-  for (let c = 0; c <= alongSamples; c++) {
-    const t = c / alongSamples;
-    const cx = rodA.x + t * dx;
-    const cz = rodA.y + t * dz;
-    const eh = heff(t);
+    if (rx < 1e-6) {
+      // Degenerate — single point at midpoint
+      const mx = (rodA.x + rodB.x) / 2, mz = (rodA.y + rodB.y) / 2;
+      for (let i = 0; i < ringVerts; i++) vertices.push([mx, y, mz]);
+      continue;
+    }
 
-    colStart.push(vertices.length);
+    // ---- Build the joint cross-section (4 segments per ring) ----
+    // bx = joint half-width;  rx = single-rod radius at this height
+    // Lines at ±bx from centreline intersect each circle.
+    // The outer intersections + outer arcs form the convex hull.
+    const bxC = Math.min(bx, rx);
+    const chordHalf = Math.sqrt(Math.max(0, rx * rx - bxC * bxC));
+    const baseAngle = Math.atan2(uz, ux);
 
-    for (let s = 0; s <= heightSamples; s++) {
-      const y = (s / heightSamples) * h0;
-      const r = y <= eh ? protectionRadius(eh, y) : 0;
+    // Arc half-angle (the arc facing away from the other rod)
+    const beta = Math.asin(Math.min(1, bxC / Math.max(rx, 1e-9)));
+    // Fixed vertex allocation per ring
+    const arcVerts = Math.max(6, Math.round(ringVerts * 0.45));
 
-      // Left vertex (−n direction)
-      vertices.push([cx - r * nx, y, cz - r * nz]);
-      // Right vertex (+n direction)
-      vertices.push([cx + r * nx, y, cz + r * nz]);
+    // 1) Outer arc of A: from +bx thru −u (far side) to −bx
+    for (let i = 0; i <= arcVerts; i++) {
+      const a = baseAngle + Math.PI - beta + (2 * beta * i) / arcVerts;
+      vertices.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
+    }
+    // 2) Straight −bx: A → B  (both at −bx distance from centreline)
+    vertices.push([rodB.x + chordHalf * ux - bxC * nx, y, rodB.y + chordHalf * uz - bxC * nz]);
+    // 3) Outer arc of B: from −bx thru +u (far side) to +bx
+    for (let i = 0; i <= arcVerts; i++) {
+      const a = baseAngle - beta + (2 * beta * i) / arcVerts;
+      vertices.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
+    }
+    // 4) Straight +bx: B → A  (close ring)
+    vertices.push([rodA.x - chordHalf * ux + bxC * nx, y, rodA.y - chordHalf * uz + bxC * nz]);
+
+    // Pad to exactly ringVerts vertices for uniform stitching
+    const actual = vertices.length - ringStart[s];
+    for (let i = actual; i < ringVerts; i++) {
+      const last = vertices[vertices.length - 1];
+      vertices.push([last[0], last[1], last[2]]);
     }
   }
 
-  // Stitch columns into left-half and right-half strips
-  for (let c = 0; c < alongSamples; c++) {
-    const base = colStart[c];
-    const next = colStart[c + 1];
-    for (let s = 0; s < heightSamples; s++) {
-      const bL = base + s * 2;       // base column, left
-      const bR = base + s * 2 + 1;   // base column, right
-      const nL = next + s * 2;       // next column, left
-      const nR = next + s * 2 + 1;   // next column, right
-
-      // Left-side strip (facing −n)
-      indices.push(bL, nL, bR);
-      indices.push(bR, nL, nR);
+  // ---- Stitch rings (all have exactly ringVerts vertices) ----
+  for (let s = 0; s < heightSamples; s++) {
+    const base = ringStart[s];
+    const top = ringStart[s + 1];
+    for (let i = 0; i < ringVerts; i++) {
+      const j = (i + 1) % ringVerts;
+      indices.push(base + i, top + i, top + j);
+      indices.push(base + i, top + j, base + j);
     }
   }
 
