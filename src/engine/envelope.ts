@@ -178,18 +178,19 @@ export function generateRodEnvelope(
 export function generateJointEnvelope(
   rodA: LightningRod,
   rodB: LightningRod,
-  ringVerts: number = 80,
+  totalRingVerts: number = 80,
   heightSamples: number = 24,
 ): EnvelopeGeometry | null {
   const D = distanceBetweenRods(rodA, rodB);
   const h = Math.max(rodA.height, rodB.height);
   const h0 = jointMinHeight(h, D);
   if (h0 <= 0 || D < 1e-9) return null;
+  const P = correctionFactor(h);
 
-  // Direction & perpendicular (XZ plane)
   const dx = rodB.x - rodA.x, dz = rodB.y - rodA.y;
   const ux = dx / D, uz = dz / D;
-  const nx = -uz, nz = ux; // perpendicular (pointing "left")
+  const nx = -uz, nz = ux;
+  const baseAngle = Math.atan2(uz, ux);
 
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
@@ -198,60 +199,91 @@ export function generateJointEnvelope(
   for (let s = 0; s <= heightSamples; s++) {
     const y = (s / heightSamples) * h0;
     const rx = protectionRadius(h, y);
-    const p = correctionFactor(h);
-    const bx = jointHalfWidth(h0, y, p);
+    const bx = jointHalfWidth(h0, y, P);
 
     ringStart.push(vertices.length);
 
     if (rx < 1e-6) {
-      // Degenerate — single point at midpoint
       const mx = (rodA.x + rodB.x) / 2, mz = (rodA.y + rodB.y) / 2;
-      for (let i = 0; i < ringVerts; i++) vertices.push([mx, y, mz]);
+      for (let i = 0; i < totalRingVerts; i++) vertices.push([mx, y, mz]);
       continue;
     }
 
-    // ---- Build the joint cross-section (4 segments per ring) ----
-    // bx = joint half-width;  rx = single-rod radius at this height
-    // Lines at ±bx from centreline intersect each circle.
-    // The outer intersections + outer arcs form the convex hull.
+    // Cross-section = convex hull of two circles (radius rx, centers D apart).
+    // It has 4 segments — allocate vertices proportional to segment length.
     const bxC = Math.min(bx, rx);
     const chordHalf = Math.sqrt(Math.max(0, rx * rx - bxC * bxC));
-    const baseAngle = Math.atan2(uz, ux);
-
-    // Arc half-angle (the arc facing away from the other rod)
     const beta = Math.asin(Math.min(1, bxC / Math.max(rx, 1e-9)));
-    // Fixed vertex allocation per ring
-    const arcVerts = Math.max(6, Math.round(ringVerts * 0.45));
 
-    // 1) Outer arc of A: from +bx thru −u (far side) to −bx
+    // Segment lengths:
+    //   Arc A  = 2 * beta * rx
+    //   Arc B  = 2 * beta * rx
+    //   Straight −bx = D + 2 * chordHalf
+    //   Straight +bx = D + 2 * chordHalf
+    const arcLen = 2 * beta * rx;
+    const straightLen = D + 2 * chordHalf;
+    const perimeter = 2 * arcLen + 2 * straightLen;
+
+    const arcVerts = Math.max(4, Math.round(totalRingVerts * arcLen / perimeter));
+    const straightVerts = Math.max(1, Math.round(totalRingVerts * straightLen / perimeter));
+    // Adjust so total = totalRingVerts
+    const totalAlloc = 2 * (arcVerts + 1) + 2 * (straightVerts + 1);
+    // If we're over, trim the straight segments
+    const excess = Math.max(0, totalAlloc - totalRingVerts);
+    const sVerts = Math.max(1, straightVerts - Math.ceil(excess / 2));
+
+    // 1) Outer arc of A: from +bx intersection thru −u to −bx intersection
     for (let i = 0; i <= arcVerts; i++) {
       const a = baseAngle + Math.PI - beta + (2 * beta * i) / arcVerts;
       vertices.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
     }
-    // 2) Straight −bx: A → B  (both at −bx distance from centreline)
-    vertices.push([rodB.x + chordHalf * ux - bxC * nx, y, rodB.y + chordHalf * uz - bxC * nz]);
-    // 3) Outer arc of B: from −bx thru +u (far side) to +bx
+    // 2) Straight −bx: A → B
+    const aLo = [rodA.x - chordHalf * ux - bxC * nx, y, rodA.y - chordHalf * uz - bxC * nz] as [number, number, number];
+    const bLo = [rodB.x + chordHalf * ux - bxC * nx, y, rodB.y + chordHalf * uz - bxC * nz] as [number, number, number];
+    for (let i = 1; i <= sVerts; i++) {
+      const t = i / (sVerts + 1);
+      vertices.push([
+        aLo[0] + (bLo[0] - aLo[0]) * t,
+        y,
+        aLo[2] + (bLo[2] - aLo[2]) * t,
+      ]);
+    }
+    vertices.push(bLo);
+    // 3) Outer arc of B: from −bx thru +u to +bx intersection
     for (let i = 0; i <= arcVerts; i++) {
       const a = baseAngle - beta + (2 * beta * i) / arcVerts;
       vertices.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
     }
-    // 4) Straight +bx: B → A  (close ring)
-    vertices.push([rodA.x - chordHalf * ux + bxC * nx, y, rodA.y - chordHalf * uz + bxC * nz]);
+    // 4) Straight +bx: B → A (close)
+    const bHi = [rodB.x + chordHalf * ux + bxC * nx, y, rodB.y + chordHalf * uz + bxC * nz] as [number, number, number];
+    const aHi = [rodA.x - chordHalf * ux + bxC * nx, y, rodA.y - chordHalf * uz + bxC * nz] as [number, number, number];
+    for (let i = 1; i <= sVerts; i++) {
+      const t = i / (sVerts + 1);
+      vertices.push([
+        bHi[0] + (aHi[0] - bHi[0]) * t,
+        y,
+        bHi[2] + (aHi[2] - bHi[2]) * t,
+      ]);
+    }
+    vertices.push(aHi);
 
-    // Pad to exactly ringVerts vertices for uniform stitching
+    // Trim/pad to exactly totalRingVerts
     const actual = vertices.length - ringStart[s];
-    for (let i = actual; i < ringVerts; i++) {
+    while (actual < totalRingVerts) {
       const last = vertices[vertices.length - 1];
       vertices.push([last[0], last[1], last[2]]);
     }
+    if (actual > totalRingVerts) {
+      vertices.length = ringStart[s] + totalRingVerts;
+    }
   }
 
-  // ---- Stitch rings (all have exactly ringVerts vertices) ----
+  // Stitch rings
   for (let s = 0; s < heightSamples; s++) {
     const base = ringStart[s];
     const top = ringStart[s + 1];
-    for (let i = 0; i < ringVerts; i++) {
-      const j = (i + 1) % ringVerts;
+    for (let i = 0; i < totalRingVerts; i++) {
+      const j = (i + 1) % totalRingVerts;
       indices.push(base + i, top + i, top + j);
       indices.push(base + i, top + j, base + j);
     }
