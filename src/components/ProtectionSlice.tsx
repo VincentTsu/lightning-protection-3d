@@ -2,12 +2,21 @@ import { useMemo } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
 import { useStore } from '../store/useStore';
-import { protectionRadius, equivalentJointPair } from '../engine/rodCalc';
-import { generateJointRing } from '../engine/envelope';
+import { protectionRadius, distanceBetweenRods, jointMinHeight } from '../engine/rodCalc';
 import { protectionWidth } from '../engine/wireCalc';
 
 const SEG = 64;
 
+/**
+ * Black cross-section lines — the visual protection boundary at `sliceHeight`.
+ *
+ * Single rod   → circle of radius rx.
+ * Overlapping pair → convex hull (stadium): two outer arcs at rx +
+ *                    common external tangents parallel to AB.
+ *
+ * The envelope = sweep of these cross-sections upward, which is exactly
+ * what the individual rod cones represent in 3D.
+ */
 export function ProtectionSlice() {
   const rods = useStore(s => s.rods);
   const wires = useStore(s => s.wires);
@@ -15,30 +24,26 @@ export function ProtectionSlice() {
 
   const rodLines = useMemo(() => {
     const n = rods.length;
-    const paired = new Set<number>();
+    const used = new Set<number>();
     const lines: { key: string; pts: THREE.Vector3[] }[] = [];
 
-    // Joint cross-sections for overlapping pairs
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const pair = equivalentJointPair(rods[i], rods[j]);
-        if (!pair || hx >= pair.h0) continue;
+        const h = Math.max(rods[i].height, rods[j].height);
+        const D = distanceBetweenRods(rods[i], rods[j]);
+        const h0 = jointMinHeight(h, D);
+        if (h0 <= 0 || hx >= h0) continue;
+        const rx = protectionRadius(h, hx);
+        if (rx <= 0) continue;
 
-        const ring = generateJointRing(rods[i], rods[j], hx, SEG);
-        if (ring && ring.length > 0) {
-          paired.add(i);
-          paired.add(j);
-          lines.push({
-            key: `joint-${rods[i].id}-${rods[j].id}`,
-            pts: ring.map(v => new THREE.Vector3(v[0], v[1], v[2])),
-          });
-        }
+        used.add(i); used.add(j);
+        lines.push({ key: `joint-${rods[i].id}-${rods[j].id}`,
+          pts: buildStadium(rods[i].x, rods[i].y, rods[j].x, rods[j].y, rx, D, hx) });
       }
     }
 
-    // Individual circles for unpaired rods
     for (let i = 0; i < n; i++) {
-      if (paired.has(i)) continue;
+      if (used.has(i)) continue;
       const r = protectionRadius(rods[i].height, hx);
       if (r <= 0) continue;
       const pts: THREE.Vector3[] = [];
@@ -83,4 +88,38 @@ export function ProtectionSlice() {
       ))}
     </group>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Stadium = convex hull of two equal circles (radius r, centres D apart)
+// ---------------------------------------------------------------------------
+
+function buildStadium(
+  ax: number, az: number, bx: number, bz: number,
+  r: number, D: number, y: number,
+): THREE.Vector3[] {
+  const dx = bx - ax, dz = bz - az;
+  const ux = dx / D, uz = dz / D;
+  const nx = -uz, nz = ux;
+  const baseAngle = Math.atan2(uz, ux);
+  const arcSegs = Math.round(SEG / 2);
+  const pts: THREE.Vector3[] = [];
+
+  // 1) Outer arc of A (away from B): π/2 → 3π/2 through π
+  for (let i = 0; i <= arcSegs; i++) {
+    const a = baseAngle + Math.PI / 2 + (Math.PI * i) / arcSegs;
+    pts.push(new THREE.Vector3(ax + r * Math.cos(a), y, az + r * Math.sin(a)));
+  }
+  // 2) Left tangent A−n → B−n (parallel to AB, at distance r)
+  // (already at A−n, just move to B−n)
+  pts.push(new THREE.Vector3(bx - r * nx, y, bz - r * nz));
+  // 3) Outer arc of B (away from A): −π/2 → π/2 through 0
+  for (let i = 0; i <= arcSegs; i++) {
+    const a = baseAngle - Math.PI / 2 + (Math.PI * i) / arcSegs;
+    pts.push(new THREE.Vector3(bx + r * Math.cos(a), y, bz + r * Math.sin(a)));
+  }
+  // 4) Right tangent B+n → A+n (close)
+  pts.push(new THREE.Vector3(ax + r * nx, y, az + r * nz));
+
+  return pts;
 }
