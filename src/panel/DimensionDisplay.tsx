@@ -1,5 +1,5 @@
 import { useStore } from '../store/useStore';
-import { groundProtectionRadius, distanceBetweenRods, jointMinHeight } from '../engine/rodCalc';
+import { groundProtectionRadius, distanceBetweenRods, equivalentJointPair } from '../engine/rodCalc';
 import { groundProtectionWidth, wireLength } from '../engine/wireCalc';
 
 function last4(id: string) {
@@ -49,8 +49,8 @@ export function DimensionDisplay() {
             {rods.flatMap((a, i) =>
               rods.slice(i + 1).map((b) => {
                 const D = distanceBetweenRods(a, b);
-                const h = Math.max(a.height, b.height);
-                const h0 = jointMinHeight(h, D);
+                const pair = equivalentJointPair(a, b);
+                const h0 = pair?.h0 ?? 0;
                 return (
                   <div key={`${a.id}-${b.id}`} className="flex justify-between items-center py-0.5 border-b border-gray-100 last:border-0">
                     <span className="text-gray-600">

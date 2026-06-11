@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store/useStore';
-import { distanceBetweenRods, jointMinHeight, groundProtectionRadius } from '../engine/rodCalc';
+import { distanceBetweenRods, equivalentJointPair, groundProtectionRadius } from '../engine/rodCalc';
 
 function last4(id: string) {
   return id.slice(-4);
@@ -121,9 +121,8 @@ export function RodList() {
           rods.forEach((other) => {
             if (other.id === rod.id) return;
             const D = distanceBetweenRods(rod, other);
-            const h = Math.max(rod.height, other.height);
-            const h0 = jointMinHeight(h, D);
-            jointPairs.push({ otherId: other.id, D, h0 });
+            const pair = equivalentJointPair(rod, other);
+            if (pair) jointPairs.push({ otherId: other.id, D, h0: pair.h0 });
           });
 
           return (

@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import * as THREE from 'three';
 import { useStore } from '../store/useStore';
 import { generateRodEnvelope, generateJointEnvelope, generateWireEnvelope } from '../engine/envelope';
-import { distanceBetweenRods, jointMinHeight } from '../engine/rodCalc';
+import { equivalentJointPair } from '../engine/rodCalc';
 
 function toGeo(e: { positions: Float32Array; indices: number[] }): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
@@ -17,24 +17,33 @@ export function ProtectionEnvelope() {
   const wires = useStore(s => s.wires);
 
   // Individual rod cones (always — for upper portions and outer sides)
-  const rodGeos = useMemo(() => {
-    return rods.map(r => ({ key: r.id, geo: toGeo(generateRodEnvelope(r)) }));
-  }, [rods]);
-
-  // Joint envelopes = sweep of tangent-based cross-sections (same as black slice)
-  const jointGeos = useMemo(() => {
+  const { rodGeos, jointGeos } = useMemo(() => {
     const geos: { key: string; geo: THREE.BufferGeometry }[] = [];
+    const rodJointTop = new Map<string, number>();
+
     for (let i = 0; i < rods.length; i++) {
       for (let j = i + 1; j < rods.length; j++) {
-        const h = Math.max(rods[i].height, rods[j].height);
-        const D = distanceBetweenRods(rods[i], rods[j]);
-        if (jointMinHeight(h, D) > 0) {
-          const env = generateJointEnvelope(rods[i], rods[j]);
-          if (env) geos.push({ key: `joint-${rods[i].id}-${rods[j].id}`, geo: toGeo(env) });
+        const pair = equivalentJointPair(rods[i], rods[j]);
+        if (!pair) continue;
+
+        const env = generateJointEnvelope(rods[i], rods[j]);
+        if (env) {
+          geos.push({ key: `joint-${rods[i].id}-${rods[j].id}`, geo: toGeo(env) });
+          rodJointTop.set(pair.sourceAId, Math.max(rodJointTop.get(pair.sourceAId) ?? 0, pair.h0));
+          rodJointTop.set(pair.sourceBId, Math.max(rodJointTop.get(pair.sourceBId) ?? 0, pair.h0));
         }
       }
     }
-    return geos;
+
+    const singleRodGeos = rods
+      .map((rod) => {
+        const startHeight = rodJointTop.get(rod.id) ?? 0;
+        if (startHeight >= rod.height - 1e-6) return null;
+        return { key: rod.id, geo: toGeo(generateRodEnvelope(rod, 32, 20, startHeight)) };
+      })
+      .filter(Boolean) as { key: string; geo: THREE.BufferGeometry }[];
+
+    return { rodGeos: singleRodGeos, jointGeos: geos };
   }, [rods]);
 
   // Wire tents

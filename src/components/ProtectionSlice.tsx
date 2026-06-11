@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 import * as THREE from 'three';
 import { Line } from '@react-three/drei';
 import { useStore } from '../store/useStore';
-import { protectionRadius, distanceBetweenRods, jointMinHeight } from '../engine/rodCalc';
+import { protectionRadius, equivalentJointPair } from '../engine/rodCalc';
 import { generateJointRing } from '../engine/envelope';
 import { protectionWidth } from '../engine/wireCalc';
 
@@ -21,9 +21,8 @@ export function ProtectionSlice() {
     // Joint cross-sections for overlapping pairs
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const h = Math.max(rods[i].height, rods[j].height);
-        const h0 = jointMinHeight(h, distanceBetweenRods(rods[i], rods[j]));
-        if (h0 <= 0 || hx >= h0) continue;
+        const pair = equivalentJointPair(rods[i], rods[j]);
+        if (!pair || hx >= pair.h0) continue;
 
         const ring = generateJointRing(rods[i], rods[j], hx, SEG);
         if (ring && ring.length > 0) {

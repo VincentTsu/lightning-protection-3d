@@ -2,3 +2,5 @@ node_modules/
 dist/
 .superpowers/
 *.local
+*.pdf
+gb50064-text.txt

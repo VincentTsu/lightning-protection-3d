@@ -3,7 +3,7 @@ import {
   Equipment, LightningRod, LightningWire, ProtectionStatus,
   RodProtectionRange, WireProtectionRange, DimensionLine,
 } from '../types';
-import { computeAllRodProtections, distanceBetweenRods, jointMinHeight } from '../engine/rodCalc';
+import { computeAllRodProtections, distanceBetweenRods } from '../engine/rodCalc';
 import { computeAllWireProtections } from '../engine/wireCalc';
 import { checkAllProtections } from '../engine/checkProtection';
 

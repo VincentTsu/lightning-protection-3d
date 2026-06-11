@@ -1,5 +1,5 @@
 import { Equipment, LightningRod, LightningWire, ProtectionStatus } from '../types';
-import { protectionRadius, correctionFactor, distanceBetweenRods, jointMinHeight, jointHalfWidth } from './rodCalc';
+import { protectionRadius, distanceBetweenRods, jointHalfWidth, equivalentJointPair } from './rodCalc';
 import { protectionWidth } from './wireCalc';
 
 function pointDistance(x1: number, y1: number, x2: number, y2: number): number {
@@ -61,16 +61,15 @@ function checkRodProtection(
   if (by.length === 0 && rods.length >= 2) {
     for (let i = 0; i < rods.length; i++) {
       for (let j = i + 1; j < rods.length; j++) {
-        const h = Math.max(rods[i].height, rods[j].height);
-        const D = distanceBetweenRods(rods[i], rods[j]);
-        const h0 = jointMinHeight(h, D);
+        const pair = equivalentJointPair(rods[i], rods[j]);
+        if (!pair) continue;
+        const h0 = pair.h0;
         if (eq.height >= h0) continue;           // too high for joint protection
-        if (!isPointBetweenRods(eq.x, eq.y, rods[i], rods[j])) continue; // outside AB span
+        if (!isPointBetweenRods(eq.x, eq.y, pair.rodA, pair.rodB)) continue; // outside equivalent AB span
 
         // Perpendicular check: must be within bx of the centreline
-        const p = correctionFactor(h);
-        const bx = jointHalfWidth(h0, eq.height, p);
-        const perpDist = pointToLineDistance(eq.x, eq.y, rods[i].x, rods[i].y, rods[j].x, rods[j].y);
+        const bx = jointHalfWidth(pair.h, pair.D, eq.height, pair.p);
+        const perpDist = pointToLineDistance(eq.x, eq.y, pair.rodA.x, pair.rodA.y, pair.rodB.x, pair.rodB.y);
         if (perpDist > bx) continue;              // too far from centreline
 
         by.push(rods[i].id, rods[j].id);

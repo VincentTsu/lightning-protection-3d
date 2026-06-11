@@ -1,5 +1,5 @@
 import { LightningRod, LightningWire, EnvelopeGeometry } from '../types';
-import { protectionRadius, correctionFactor, distanceBetweenRods, jointMinHeight, jointHalfWidth } from './rodCalc';
+import { protectionRadius, jointHalfWidth, equivalentJointPair } from './rodCalc';
 import { protectionWidth } from './wireCalc';
 
 // ---------------------------------------------------------------------------
@@ -20,31 +20,33 @@ export function generateJointRing(
   y: number,           // height
   ringVerts: number,   // desired vertex count
 ): [number, number, number][] | null {
-  const D = distanceBetweenRods(rodA, rodB);
-  const h = Math.max(rodA.height, rodB.height);
-  const h0 = jointMinHeight(h, D);
+  const pair = equivalentJointPair(rodA, rodB);
+  if (!pair) return null;
+  const eqA = pair.rodA;
+  const eqB = pair.rodB;
+  const D = pair.D;
+  const h0 = pair.h0;
   if (h0 <= 0 || y >= h0) return null;
 
-  const rx = protectionRadius(h, y);
+  const rx = protectionRadius(pair.h, y);
   if (rx <= 0) return null;
-  const P = correctionFactor(h);
-  const bx = jointHalfWidth(h0, y, P);
+  const bx = jointHalfWidth(pair.h, pair.D, y, pair.p);
 
-  const dx = rodB.x - rodA.x, dz = rodB.y - rodA.y;
+  const dx = eqB.x - eqA.x, dz = eqB.y - eqA.y;
   const ux = dx / D, uz = dz / D;
   const nx = -uz, nz = ux;
   const baseAngle = Math.atan2(uz, ux);
 
   // Midpoint and ±bx reference points
-  const mx = (rodA.x + rodB.x) / 2, mz = (rodA.y + rodB.y) / 2;
+  const mx = (eqA.x + eqB.x) / 2, mz = (eqA.y + eqB.y) / 2;
   const pLx = mx - bx * nx, pLz = mz - bx * nz; // P_L (−bx)
   const pRx = mx + bx * nx, pRz = mz + bx * nz; // P_R (+bx)
 
   // Tangent points from P_L and P_R to both circles
-  const tAL = tangentsFromPoint(pLx, pLz, rodA.x, rodA.y, rx);
-  const tBL = tangentsFromPoint(pLx, pLz, rodB.x, rodB.y, rx);
-  const tAR = tangentsFromPoint(pRx, pRz, rodA.x, rodA.y, rx);
-  const tBR = tangentsFromPoint(pRx, pRz, rodB.x, rodB.y, rx);
+  const tAL = tangentsFromPoint(pLx, pLz, eqA.x, eqA.y, rx);
+  const tBL = tangentsFromPoint(pLx, pLz, eqB.x, eqB.y, rx);
+  const tAR = tangentsFromPoint(pRx, pRz, eqA.x, eqA.y, rx);
+  const tBR = tangentsFromPoint(pRx, pRz, eqB.x, eqB.y, rx);
 
   // Pick the outer tangent point for each (farther from the other rod)
   const pick = (pair: [number, number][], cx: number, cz: number, ox: number, oz: number) => {
@@ -54,12 +56,12 @@ export function generateJointRing(
   };
 
   // Fallback if any tangent computation fails (P inside circle)
-  if (!tAL || !tBL || !tAR || !tBR) return fallbackRing(rodA, rodB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts);
+  if (!tAL || !tBL || !tAR || !tBR) return fallbackRing(eqA, eqB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts);
 
-  const TA_L = pick(tAL, rodA.x, rodA.y, rodB.x, rodB.y);
-  const TB_L = pick(tBL, rodB.x, rodB.y, rodA.x, rodA.y);
-  const TA_R = pick(tAR, rodA.x, rodA.y, rodB.x, rodB.y);
-  const TB_R = pick(tBR, rodB.x, rodB.y, rodA.x, rodA.y);
+  const TA_L = pick(tAL, eqA.x, eqA.y, eqB.x, eqB.y);
+  const TB_L = pick(tBL, eqB.x, eqB.y, eqA.x, eqA.y);
+  const TA_R = pick(tAR, eqA.x, eqA.y, eqB.x, eqB.y);
+  const TB_R = pick(tBR, eqB.x, eqB.y, eqA.x, eqA.y);
 
   // Build the ring: 6 segments
   //   arc A  (TA_R → TA_L, far side)
@@ -74,12 +76,12 @@ export function generateJointRing(
   const ring: [number, number, number][] = [];
 
   // Arc A: TA_R → TA_L through far side
-  const aAR = Math.atan2(TA_R[1] - rodA.y, TA_R[0] - rodA.x);
-  const aAL = Math.atan2(TA_L[1] - rodA.y, TA_L[0] - rodA.x);
+  const aAR = Math.atan2(TA_R[1] - eqA.y, TA_R[0] - eqA.x);
+  const aAL = Math.atan2(TA_L[1] - eqA.y, TA_L[0] - eqA.x);
   const { from: afA, to: atA } = arcThroughFar(aAR, aAL, baseAngle + Math.PI);
   for (let i = 0; i <= arcVertsA; i++) {
     const a = afA + (atA - afA) * i / arcVertsA;
-    ring.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
+    ring.push([eqA.x + rx * Math.cos(a), y, eqA.y + rx * Math.sin(a)]);
   }
 
   // Tangent: TA_L → P_L → TB_L
@@ -95,12 +97,12 @@ export function generateJointRing(
   ring.push([TB_L[0], y, TB_L[1]]);
 
   // Arc B: TB_L → TB_R through far side
-  const aBL = Math.atan2(TB_L[1] - rodB.y, TB_L[0] - rodB.x);
-  const aBR = Math.atan2(TB_R[1] - rodB.y, TB_R[0] - rodB.x);
+  const aBL = Math.atan2(TB_L[1] - eqB.y, TB_L[0] - eqB.x);
+  const aBR = Math.atan2(TB_R[1] - eqB.y, TB_R[0] - eqB.x);
   const { from: afB, to: atB } = arcThroughFar(aBL, aBR, baseAngle);
   for (let i = 0; i <= arcVertsB; i++) {
     const a = afB + (atB - afB) * i / arcVertsB;
-    ring.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
+    ring.push([eqB.x + rx * Math.cos(a), y, eqB.y + rx * Math.sin(a)]);
   }
 
   // Tangent: TB_R → P_R → TA_R
@@ -260,16 +262,18 @@ export function generateRodEnvelope(
   rod: LightningRod,
   segments: number = 32,
   heightSamples: number = 20,
+  startHeight: number = 0,
 ): EnvelopeGeometry {
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
+  const y0 = Math.max(0, Math.min(startHeight, rod.height));
 
-  // --- generate vertices: rings from bottom (y=0) to top (y=rod.height) ---
+  // --- generate vertices: rings from y0 to top (y=rod.height) ---
   const ringStart: number[] = []; // first vertex index of each ring
 
   for (let s = 0; s <= heightSamples; s++) {
     const t = s / heightSamples;
-    const hz = t * rod.height;
+    const hz = y0 + t * (rod.height - y0);
     const r = protectionRadius(rod.height, hz);
 
     ringStart.push(vertices.length);
@@ -299,10 +303,10 @@ export function generateRodEnvelope(
     }
   }
 
-  // --- bottom cap (y=0 disc) ---
-  // Add a center vertex at the rod base
+  // --- bottom cap ---
+  // Add a center vertex at the lower clipping height.
   const bottomCenter = vertices.length;
-  vertices.push([rod.x, 0, rod.y]);
+  vertices.push([rod.x, y0, rod.y]);
 
   const bottomRing = ringStart[0];
   for (let i = 0; i < segments; i++) {
@@ -345,10 +349,9 @@ export function generateJointEnvelope(
   ringVerts: number = 80,
   heightSamples: number = 24,
 ): EnvelopeGeometry | null {
-  const D = distanceBetweenRods(rodA, rodB);
-  const h = Math.max(rodA.height, rodB.height);
-  const h0 = jointMinHeight(h, D);
-  if (h0 <= 0 || D < 1e-9) return null;
+  const pair = equivalentJointPair(rodA, rodB);
+  if (!pair) return null;
+  const h0 = pair.h0;
 
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
@@ -363,7 +366,7 @@ export function generateJointEnvelope(
     }
     // Pad if ring returned fewer vertices
     while (vertices.length - ringStart[s] < ringVerts) {
-      const last = vertices[vertices.length - 1] || [rodA.x, y, rodA.y] as [number, number, number];
+      const last = vertices[vertices.length - 1] || [pair.rodA.x, y, pair.rodA.y] as [number, number, number];
       vertices.push([last[0], last[1], last[2]]);
     }
     // Trim if too many

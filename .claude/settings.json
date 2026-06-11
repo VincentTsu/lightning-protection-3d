@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo \"*.pdf\")",
+      "Bash(echo \"gb50064-text.txt\")",
+      "Bash(git add *)",
+      "Bash(git commit -m 'feat: GB50064 Fig 5.2.2-2 chart-based bx calculation *)",
+      "Bash(git push *)"
+    ]
+  }
+}
