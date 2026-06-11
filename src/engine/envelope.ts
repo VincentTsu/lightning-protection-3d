@@ -41,12 +41,26 @@ export function generateJointRing(
   const pLx = mx - bx * nx, pLz = mz - bx * nz;
   const pRx = mx + bx * nx, pRz = mz + bx * nz;
 
-  const tAL = tangentsFromPoint(pLx, pLz, eqA.x, eqA.y, rx);
-  const tBL = tangentsFromPoint(pLx, pLz, eqB.x, eqB.y, rx);
-  const tAR = tangentsFromPoint(pRx, pRz, eqA.x, eqA.y, rx);
-  const tBR = tangentsFromPoint(pRx, pRz, eqB.x, eqB.y, rx);
+  // If ±bx points fall inside the circles, the tangents don't exist.
+  // In that case the two circles heavily overlap → use the standard
+  // external tangents at distance rx from centreline (classic stadium).
+  let tAL = tangentsFromPoint(pLx, pLz, eqA.x, eqA.y, rx);
+  let tBL = tangentsFromPoint(pLx, pLz, eqB.x, eqB.y, rx);
+  let tAR = tangentsFromPoint(pRx, pRz, eqA.x, eqA.y, rx);
+  let tBR = tangentsFromPoint(pRx, pRz, eqB.x, eqB.y, rx);
 
   if (!tAL || !tBL || !tAR || !tBR) {
+    // Retry with reference points at distance rx (circles' outermost extent)
+    const Lx = mx - rx * nx, Lz = mz - rx * nz;
+    const Rx = mx + rx * nx, Rz = mz + rx * nz;
+    tAL = tangentsFromPoint(Lx, Lz, eqA.x, eqA.y, rx);
+    tBL = tangentsFromPoint(Lx, Lz, eqB.x, eqB.y, rx);
+    tAR = tangentsFromPoint(Rx, Rz, eqA.x, eqA.y, rx);
+    tBR = tangentsFromPoint(Rx, Rz, eqB.x, eqB.y, rx);
+  }
+
+  if (!tAL || !tBL || !tAR || !tBR) {
+    // Last resort: two separate circles
     return arcLengthSampleRing(eqA, eqB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts, true);
   }
 
