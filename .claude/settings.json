@@ -10,7 +10,9 @@
       "Bash(git commit -m 'fix: arc-length sampling for joint ring to eliminate envelope tears *)",
       "Bash(git commit -m 'fix: handle tangent fallback when P is inside circle *)",
       "Bash(git commit -m 'fix: skip bottom cap on clipped rod cones to eliminate boundary artifact *)",
-      "Bash(git commit -m 'refactor: simplify — individual cones only, remove broken joint envelope *)"
+      "Bash(git commit -m 'refactor: simplify — individual cones only, remove broken joint envelope *)",
+      "Bash(git commit -m 'refactor: massive simplification — remove all complex joint geometry *)",
+      "Bash(git commit -m 'fix: restore correct bx-based tangent slice *)"
     ]
   }
 }
