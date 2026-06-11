@@ -1,6 +1,174 @@
 import { LightningRod, LightningWire, EnvelopeGeometry } from '../types';
-import { protectionRadius } from './rodCalc';
+import { protectionRadius, equivalentJointPair, jointHalfWidth, JointProtectionPair } from './rodCalc';
 import { protectionWidth } from './wireCalc';
+
+// ---------------------------------------------------------------------------
+// Joint ring (shared by slice and 3D envelope)
+// ---------------------------------------------------------------------------
+
+/** Tangent points from external point P to circle (C,r) in XZ plane */
+function tangentPoints(
+  px: number, pz: number, cx: number, cz: number, r: number,
+): [number, number][] | null {
+  const dx = cx - px, dz = cz - pz;
+  const dSq = dx * dx + dz * dz;
+  if (dSq <= r * r) return null;
+  const d = Math.sqrt(dSq), nx = dx / d, nz = dz / d;
+  const disc = Math.sqrt(dSq - r * r);
+  const a = (r * r) / d, b = (r * disc) / d;
+  const rx = -nz, rz = nx;
+  return [
+    [cx - a * nx + b * rx, cz - a * nz + b * rz],
+    [cx - a * nx - b * rx, cz - a * nz - b * rz],
+  ];
+}
+
+/** Generate a closed ring for the joint cross-section at height y */
+export function generateJointRing(
+  rodA: LightningRod, rodB: LightningRod, y: number, ringVerts: number,
+): [number, number, number][] | null {
+  const pair = equivalentJointPair(rodA, rodB);
+  if (!pair) return null;
+  const { rodA: eqA, rodB: eqB, D, h, p, h0 } = pair;
+  if (y >= h0) return null;
+  const rx = protectionRadius(h, y);
+  if (rx <= 0) return null;
+  const bx = jointHalfWidth(h, D, y, p);
+
+  const dx = eqB.x - eqA.x, dz = eqB.y - eqA.y;
+  const geoD = Math.sqrt(dx * dx + dz * dz);
+  if (geoD < 1e-9) return null;
+  const ux = dx / geoD, uz = dz / geoD;
+  const nx = -uz, nz = ux;
+  const baseAngle = Math.atan2(uz, ux);
+
+  // Narrowest point = midpoint of equivalent rods
+  const mx = (eqA.x + eqB.x) / 2, mz = (eqA.y + eqB.y) / 2;
+
+  let pLx = mx - bx * nx, pLz = mz - bx * nz;
+  let pRx = mx + bx * nx, pRz = mz + bx * nz;
+
+  let tAL = tangentPoints(pLx, pLz, eqA.x, eqA.y, rx);
+  let tBL = tangentPoints(pLx, pLz, eqB.x, eqB.y, rx);
+  let tAR = tangentPoints(pRx, pRz, eqA.x, eqA.y, rx);
+  let tBR = tangentPoints(pRx, pRz, eqB.x, eqB.y, rx);
+
+  if (!tAL || !tBL || !tAR || !tBR) {
+    pLx = mx - rx * nx; pLz = mz - rx * nz;
+    pRx = mx + rx * nx; pRz = mz + rx * nz;
+    tAL = tangentPoints(pLx, pLz, eqA.x, eqA.y, rx);
+    tBL = tangentPoints(pLx, pLz, eqB.x, eqB.y, rx);
+    tAR = tangentPoints(pRx, pRz, eqA.x, eqA.y, rx);
+    tBR = tangentPoints(pRx, pRz, eqB.x, eqB.y, rx);
+  }
+  if (!tAL || !tBL || !tAR || !tBR) return null;
+
+  const pick = (pair: [number, number][], ox: number, oz: number) => {
+    const d0 = (pair[0][0]-ox)**2+(pair[0][1]-oz)**2;
+    const d1 = (pair[1][0]-ox)**2+(pair[1][1]-oz)**2;
+    return d0 > d1 ? pair[0] : pair[1];
+  };
+  const TA_L = pick(tAL, eqB.x, eqB.y);
+  const TB_L = pick(tBL, eqA.x, eqA.y);
+  const TA_R = pick(tAR, eqB.x, eqB.y);
+  const TB_R = pick(tBR, eqA.x, eqA.y);
+
+  // Build ring with exact ringVerts vertices
+  // Each arc contributes arcV+1 vertices, each tangent seg contributes tanV vertices
+  // Total = 2*(arcV+1) + 4*tanV. Solve for arcV, tanV.
+  const arcV = Math.max(4, Math.round((ringVerts - 4) * 0.35));
+  let tanV = Math.max(1, Math.round((ringVerts - 2 * (arcV + 1)) / 4));
+  // Adjust to hit exactly ringVerts
+  while (2 * (arcV + 1) + 4 * tanV < ringVerts) tanV++;
+  const ring: [number, number, number][] = [];
+
+  ring.push(...arcPoints(eqA.x, eqA.y, rx, TA_R, TA_L, baseAngle + Math.PI, y, arcV));
+  ring.push(...segPoints(TA_L, [pLx, pLz], y, tanV));
+  ring.push(...segPoints([pLx, pLz], TB_L, y, tanV));
+  ring.push(...arcPoints(eqB.x, eqB.y, rx, TB_L, TB_R, baseAngle, y, arcV));
+  ring.push(...segPoints(TB_R, [pRx, pRz], y, tanV));
+  ring.push(...segPoints([pRx, pRz], TA_R, y, tanV));
+
+  // Trim or pad to exact ringVerts
+  while (ring.length > ringVerts) ring.pop();
+  while (ring.length < ringVerts) ring.push([...ring[ring.length - 1]]);
+
+  return ring;
+}
+
+function arcPoints(
+  cx: number, cz: number, r: number,
+  from: [number, number], to: [number, number],
+  farDir: number, y: number, n: number,
+): [number, number, number][] {
+  const norm = (a: number) => ((a % (2*Math.PI)) + 2*Math.PI) % (2*Math.PI);
+  let a1 = norm(Math.atan2(from[1]-cz, from[0]-cx));
+  let a2 = norm(Math.atan2(to[1]-cz, to[0]-cx));
+  const lo = Math.min(a1, a2), hi = Math.max(a1, a2);
+  const far = norm(farDir);
+  let fa: number, ta: number;
+  if (lo <= far && far <= hi) { fa = lo; ta = hi; }
+  else { fa = hi; ta = lo + 2*Math.PI; }
+  const pts: [number, number, number][] = [];
+  for (let i = 0; i <= n; i++) {
+    const a = fa + (ta - fa) * i / n;
+    pts.push([cx + r * Math.cos(a), y, cz + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+function segPoints(
+  a: [number, number], b: [number, number], y: number, n: number,
+): [number, number, number][] {
+  const pts: [number, number, number][] = [];
+  for (let i = 1; i <= n; i++) {
+    const t = i / (n + 1);
+    pts.push([a[0] + (b[0]-a[0])*t, y, a[1] + (b[1]-a[1])*t]);
+  }
+  return pts;
+}
+
+// ---------------------------------------------------------------------------
+// 3D joint envelope = sweep of joint rings from 0 → h0
+// ---------------------------------------------------------------------------
+
+export function generateJointEnvelope(
+  rodA: LightningRod, rodB: LightningRod,
+  ringVerts: number = 80, heightSamples: number = 24,
+): EnvelopeGeometry | null {
+  const pair = equivalentJointPair(rodA, rodB);
+  if (!pair) return null;
+  const h0 = pair.h0;
+
+  const vertices: [number, number, number][] = [];
+  const indices: number[] = [];
+  const ringStart: number[] = [];
+
+  for (let s = 0; s <= heightSamples; s++) {
+    const y = (s / heightSamples) * h0;
+    const ring = generateJointRing(rodA, rodB, y, ringVerts);
+    ringStart.push(vertices.length);
+    if (ring && ring.length === ringVerts) {
+      for (const v of ring) vertices.push(v);
+    } else {
+      // Degenerate — collapse to midpoint
+      const mx = (pair.rodA.x + pair.rodB.x) / 2;
+      const mz = (pair.rodA.y + pair.rodB.y) / 2;
+      for (let i = 0; i < ringVerts; i++) vertices.push([mx, y, mz]);
+    }
+  }
+
+  for (let s = 0; s < heightSamples; s++) {
+    const base = ringStart[s], top = ringStart[s + 1];
+    for (let i = 0; i < ringVerts; i++) {
+      const j = (i + 1) % ringVerts;
+      indices.push(base + i, top + i, top + j);
+      indices.push(base + i, top + j, base + j);
+    }
+  }
+
+  return vertices.length > 0 ? packGeometry(vertices, indices) : null;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
