@@ -3,6 +3,178 @@ import { protectionRadius, correctionFactor, distanceBetweenRods, jointMinHeight
 import { protectionWidth } from './wireCalc';
 
 // ---------------------------------------------------------------------------
+// Shared: tangent-based joint cross-section (used by both slice & envelope)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a single ring of vertices for the joint protection cross-section
+ * at height `y`.  Uses proper geometric tangents from the ±bx reference
+ * points to both protection circles.
+ *
+ * Returns `ringVerts` 3D points [x, y, z] forming a closed counter-clockwise
+ * loop, or null if no joint protection exists at this height.
+ */
+export function generateJointRing(
+  rodA: LightningRod,
+  rodB: LightningRod,
+  y: number,           // height
+  ringVerts: number,   // desired vertex count
+): [number, number, number][] | null {
+  const D = distanceBetweenRods(rodA, rodB);
+  const h = Math.max(rodA.height, rodB.height);
+  const h0 = jointMinHeight(h, D);
+  if (h0 <= 0 || y >= h0) return null;
+
+  const rx = protectionRadius(h, y);
+  if (rx <= 0) return null;
+  const P = correctionFactor(h);
+  const bx = jointHalfWidth(h0, y, P);
+
+  const dx = rodB.x - rodA.x, dz = rodB.y - rodA.y;
+  const ux = dx / D, uz = dz / D;
+  const nx = -uz, nz = ux;
+  const baseAngle = Math.atan2(uz, ux);
+
+  // Midpoint and ±bx reference points
+  const mx = (rodA.x + rodB.x) / 2, mz = (rodA.y + rodB.y) / 2;
+  const pLx = mx - bx * nx, pLz = mz - bx * nz; // P_L (−bx)
+  const pRx = mx + bx * nx, pRz = mz + bx * nz; // P_R (+bx)
+
+  // Tangent points from P_L and P_R to both circles
+  const tAL = tangentsFromPoint(pLx, pLz, rodA.x, rodA.y, rx);
+  const tBL = tangentsFromPoint(pLx, pLz, rodB.x, rodB.y, rx);
+  const tAR = tangentsFromPoint(pRx, pRz, rodA.x, rodA.y, rx);
+  const tBR = tangentsFromPoint(pRx, pRz, rodB.x, rodB.y, rx);
+
+  // Pick the outer tangent point for each (farther from the other rod)
+  const pick = (pair: [number, number][], cx: number, cz: number, ox: number, oz: number) => {
+    const d0 = (pair[0][0] - ox) ** 2 + (pair[0][1] - oz) ** 2;
+    const d1 = (pair[1][0] - ox) ** 2 + (pair[1][1] - oz) ** 2;
+    return d0 > d1 ? pair[0] : pair[1];
+  };
+
+  // Fallback if any tangent computation fails (P inside circle)
+  if (!tAL || !tBL || !tAR || !tBR) return fallbackRing(rodA, rodB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts);
+
+  const TA_L = pick(tAL, rodA.x, rodA.y, rodB.x, rodB.y);
+  const TB_L = pick(tBL, rodB.x, rodB.y, rodA.x, rodA.y);
+  const TA_R = pick(tAR, rodA.x, rodA.y, rodB.x, rodB.y);
+  const TB_R = pick(tBR, rodB.x, rodB.y, rodA.x, rodA.y);
+
+  // Build the ring: 6 segments
+  //   arc A  (TA_R → TA_L, far side)
+  //   tangent (TA_L → P_L → TB_L)
+  //   arc B  (TB_L → TB_R, far side)
+  //   tangent (TB_R → P_R → TA_R)
+
+  const arcVertsA = Math.max(6, Math.round(ringVerts * 0.3));
+  const arcVertsB = Math.max(6, Math.round(ringVerts * 0.3));
+  const straightVerts = Math.max(2, Math.round((ringVerts - arcVertsA - arcVertsB - 6) / 6));
+
+  const ring: [number, number, number][] = [];
+
+  // Arc A: TA_R → TA_L through far side
+  const aAR = Math.atan2(TA_R[1] - rodA.y, TA_R[0] - rodA.x);
+  const aAL = Math.atan2(TA_L[1] - rodA.y, TA_L[0] - rodA.x);
+  const { from: afA, to: atA } = arcThroughFar(aAR, aAL, baseAngle + Math.PI);
+  for (let i = 0; i <= arcVertsA; i++) {
+    const a = afA + (atA - afA) * i / arcVertsA;
+    ring.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
+  }
+
+  // Tangent: TA_L → P_L → TB_L
+  for (let i = 1; i <= straightVerts; i++) {
+    const t = i / (straightVerts + 1);
+    ring.push([TA_L[0] + (pLx - TA_L[0]) * t, y, TA_L[1] + (pLz - TA_L[1]) * t]);
+  }
+  ring.push([pLx, y, pLz]);
+  for (let i = 1; i <= straightVerts; i++) {
+    const t = i / (straightVerts + 1);
+    ring.push([pLx + (TB_L[0] - pLx) * t, y, pLz + (TB_L[1] - pLz) * t]);
+  }
+  ring.push([TB_L[0], y, TB_L[1]]);
+
+  // Arc B: TB_L → TB_R through far side
+  const aBL = Math.atan2(TB_L[1] - rodB.y, TB_L[0] - rodB.x);
+  const aBR = Math.atan2(TB_R[1] - rodB.y, TB_R[0] - rodB.x);
+  const { from: afB, to: atB } = arcThroughFar(aBL, aBR, baseAngle);
+  for (let i = 0; i <= arcVertsB; i++) {
+    const a = afB + (atB - afB) * i / arcVertsB;
+    ring.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
+  }
+
+  // Tangent: TB_R → P_R → TA_R
+  for (let i = 1; i <= straightVerts; i++) {
+    const t = i / (straightVerts + 1);
+    ring.push([TB_R[0] + (pRx - TB_R[0]) * t, y, TB_R[1] + (pRz - TB_R[1]) * t]);
+  }
+  ring.push([pRx, y, pRz]);
+  for (let i = 1; i <= straightVerts; i++) {
+    const t = i / (straightVerts + 1);
+    ring.push([pRx + (TA_R[0] - pRx) * t, y, pRz + (TA_R[1] - pRz) * t]);
+  }
+  ring.push([TA_R[0], y, TA_R[1]]);
+
+  return ring;
+}
+
+// ---- helpers ----
+
+function tangentsFromPoint(
+  px: number, pz: number, cx: number, cz: number, r: number,
+): [number, number][] | null {
+  const dx = cx - px, dz = cz - pz;
+  const dSq = dx * dx + dz * dz;
+  if (dSq <= r * r) return null;
+  const d = Math.sqrt(dSq);
+  const nx = dx / d, nz = dz / d; // unit P→C
+  const disc = Math.sqrt(dSq - r * r);
+  const rSqOverD = (r * r) / d;
+  // Tangent point = C + (r²/d²)*(P-C) ± (r*disc/d²)*Rot90(P-C)
+  // = C - (r²/d)*n ± (r*disc/d)*n_perp
+  const rx = -nz, rz = nx; // rotate 90° CCW
+  return [
+    [cx - rSqOverD * nx + (r * disc / d) * rx,
+     cz - rSqOverD * nz + (r * disc / d) * rz],
+    [cx - rSqOverD * nx - (r * disc / d) * rx,
+     cz - rSqOverD * nz - (r * disc / d) * rz],
+  ];
+}
+
+/** Given two angles on a circle, find the arc that passes through `farDir` */
+function arcThroughFar(a1: number, a2: number, farDir: number) {
+  let from = a1, to = a2;
+  while (to < from) to += 2 * Math.PI;
+  let far = farDir;
+  while (far < from) far += 2 * Math.PI;
+  if (far > to) {
+    // Doesn't pass through farDir — flip
+    to -= 2 * Math.PI;
+    [from, to] = [to, from];
+  }
+  return { from, to };
+}
+
+function fallbackRing(
+  rodA: LightningRod, rodB: LightningRod,
+  rx: number, y: number,
+  ux: number, uz: number, _nx: number, _nz: number,
+  baseAngle: number, ringVerts: number,
+): [number, number, number][] {
+  const half = Math.round(ringVerts / 2);
+  const ring: [number, number, number][] = [];
+  for (let i = 0; i <= half; i++) {
+    const a = baseAngle + Math.PI / 2 + (Math.PI * i) / half;
+    ring.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
+  }
+  for (let i = 0; i <= ringVerts - half - 1; i++) {
+    const a = baseAngle - Math.PI / 2 + (Math.PI * i) / (ringVerts - half - 1);
+    ring.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
+  }
+  return ring;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -164,33 +336,19 @@ export function generateRodEnvelope(
 // ---------------------------------------------------------------------------
 
 /**
- * Generate the joint protection surface between two lightning rods.
- *
- * Per GB50064 折线法:
- *   1. h0 = h − D/(7p)  — lowest point of joint protection at midpoint
- *   2. At each height y ∈ [0, h0]:
- *        rx = protectionRadius(h, y)       — single-rod circle radius
- *        bx = jointHalfWidth(h0, y, P)    — joint half-width
- *   3. The cross-section is bounded by two lines at ±bx from the centreline
- *      and the outer arcs of the two circles (outside the ±bx lines).
- *   4. Stack these cross-sections from y=0 upward to form the 3D surface.
+ * Generate the 3D joint protection surface by stacking `generateJointRing`
+ * cross-sections from y=0 to y=h0.
  */
 export function generateJointEnvelope(
   rodA: LightningRod,
   rodB: LightningRod,
-  totalRingVerts: number = 80,
+  ringVerts: number = 80,
   heightSamples: number = 24,
 ): EnvelopeGeometry | null {
   const D = distanceBetweenRods(rodA, rodB);
   const h = Math.max(rodA.height, rodB.height);
   const h0 = jointMinHeight(h, D);
   if (h0 <= 0 || D < 1e-9) return null;
-  const P = correctionFactor(h);
-
-  const dx = rodB.x - rodA.x, dz = rodB.y - rodA.y;
-  const ux = dx / D, uz = dz / D;
-  const nx = -uz, nz = ux;
-  const baseAngle = Math.atan2(uz, ux);
 
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
@@ -198,92 +356,27 @@ export function generateJointEnvelope(
 
   for (let s = 0; s <= heightSamples; s++) {
     const y = (s / heightSamples) * h0;
-    const rx = protectionRadius(h, y);
-    const bx = jointHalfWidth(h0, y, P);
-
+    const ring = generateJointRing(rodA, rodB, y, ringVerts);
     ringStart.push(vertices.length);
-
-    if (rx < 1e-6) {
-      const mx = (rodA.x + rodB.x) / 2, mz = (rodA.y + rodB.y) / 2;
-      for (let i = 0; i < totalRingVerts; i++) vertices.push([mx, y, mz]);
-      continue;
+    if (ring) {
+      for (const v of ring) vertices.push(v);
     }
-
-    // Cross-section = convex hull of two circles (radius rx, centers D apart).
-    // It has 4 segments — allocate vertices proportional to segment length.
-    const bxC = Math.min(bx, rx);
-    const chordHalf = Math.sqrt(Math.max(0, rx * rx - bxC * bxC));
-    const beta = Math.asin(Math.min(1, bxC / Math.max(rx, 1e-9)));
-
-    // Segment lengths:
-    //   Arc A  = 2 * beta * rx
-    //   Arc B  = 2 * beta * rx
-    //   Straight −bx = D + 2 * chordHalf
-    //   Straight +bx = D + 2 * chordHalf
-    const arcLen = 2 * beta * rx;
-    const straightLen = D + 2 * chordHalf;
-    const perimeter = 2 * arcLen + 2 * straightLen;
-
-    const arcVerts = Math.max(4, Math.round(totalRingVerts * arcLen / perimeter));
-    const straightVerts = Math.max(1, Math.round(totalRingVerts * straightLen / perimeter));
-    // Adjust so total = totalRingVerts
-    const totalAlloc = 2 * (arcVerts + 1) + 2 * (straightVerts + 1);
-    // If we're over, trim the straight segments
-    const excess = Math.max(0, totalAlloc - totalRingVerts);
-    const sVerts = Math.max(1, straightVerts - Math.ceil(excess / 2));
-
-    // 1) Outer arc of A: from +bx intersection thru −u to −bx intersection
-    for (let i = 0; i <= arcVerts; i++) {
-      const a = baseAngle + Math.PI - beta + (2 * beta * i) / arcVerts;
-      vertices.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
-    }
-    // 2) Straight −bx: A → B
-    const aLo = [rodA.x - chordHalf * ux - bxC * nx, y, rodA.y - chordHalf * uz - bxC * nz] as [number, number, number];
-    const bLo = [rodB.x + chordHalf * ux - bxC * nx, y, rodB.y + chordHalf * uz - bxC * nz] as [number, number, number];
-    for (let i = 1; i <= sVerts; i++) {
-      const t = i / (sVerts + 1);
-      vertices.push([
-        aLo[0] + (bLo[0] - aLo[0]) * t,
-        y,
-        aLo[2] + (bLo[2] - aLo[2]) * t,
-      ]);
-    }
-    vertices.push(bLo);
-    // 3) Outer arc of B: from −bx thru +u to +bx intersection
-    for (let i = 0; i <= arcVerts; i++) {
-      const a = baseAngle - beta + (2 * beta * i) / arcVerts;
-      vertices.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
-    }
-    // 4) Straight +bx: B → A (close)
-    const bHi = [rodB.x + chordHalf * ux + bxC * nx, y, rodB.y + chordHalf * uz + bxC * nz] as [number, number, number];
-    const aHi = [rodA.x - chordHalf * ux + bxC * nx, y, rodA.y - chordHalf * uz + bxC * nz] as [number, number, number];
-    for (let i = 1; i <= sVerts; i++) {
-      const t = i / (sVerts + 1);
-      vertices.push([
-        bHi[0] + (aHi[0] - bHi[0]) * t,
-        y,
-        bHi[2] + (aHi[2] - bHi[2]) * t,
-      ]);
-    }
-    vertices.push(aHi);
-
-    // Trim/pad to exactly totalRingVerts
-    const actual = vertices.length - ringStart[s];
-    while (actual < totalRingVerts) {
-      const last = vertices[vertices.length - 1];
+    // Pad if ring returned fewer vertices
+    while (vertices.length - ringStart[s] < ringVerts) {
+      const last = vertices[vertices.length - 1] || [rodA.x, y, rodA.y] as [number, number, number];
       vertices.push([last[0], last[1], last[2]]);
     }
-    if (actual > totalRingVerts) {
-      vertices.length = ringStart[s] + totalRingVerts;
+    // Trim if too many
+    if (vertices.length - ringStart[s] > ringVerts) {
+      vertices.length = ringStart[s] + ringVerts;
     }
   }
 
-  // Stitch rings
   for (let s = 0; s < heightSamples; s++) {
     const base = ringStart[s];
     const top = ringStart[s + 1];
-    for (let i = 0; i < totalRingVerts; i++) {
-      const j = (i + 1) % totalRingVerts;
+    for (let i = 0; i < ringVerts; i++) {
+      const j = (i + 1) % ringVerts;
       indices.push(base + i, top + i, top + j);
       indices.push(base + i, top + j, base + j);
     }
