@@ -336,16 +336,15 @@ export function generateRodEnvelope(
     }
   }
 
-  // --- bottom cap ---
-  // Add a center vertex at the lower clipping height.
-  const bottomCenter = vertices.length;
-  vertices.push([rod.x, y0, rod.y]);
-
-  const bottomRing = ringStart[0];
-  for (let i = 0; i < segments; i++) {
-    const next = (i + 1) % segments;
-    // Winding downward (clockwise from above so normal points -Y)
-    indices.push(bottomCenter, bottomRing + next, bottomRing + i);
+  // --- bottom cap (skip when clipped — abuts joint envelope) ---
+  if (y0 <= 1e-6) {
+    const bottomCenter = vertices.length;
+    vertices.push([rod.x, 0, rod.y]);
+    const bottomRing = ringStart[0];
+    for (let i = 0; i < segments; i++) {
+      const next = (i + 1) % segments;
+      indices.push(bottomCenter, bottomRing + next, bottomRing + i);
+    }
   }
 
   // --- top cap (cone tip) ---
