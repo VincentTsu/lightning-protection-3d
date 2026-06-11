@@ -143,18 +143,19 @@ function tangentsFromPoint(
   ];
 }
 
-/** Given two angles on a circle, find the arc that passes through `farDir` */
+/** Given two angles on a circle, find the CCW arc that passes through `farDir` */
 function arcThroughFar(a1: number, a2: number, farDir: number) {
-  let from = a1, to = a2;
-  while (to < from) to += 2 * Math.PI;
-  let far = farDir;
-  while (far < from) far += 2 * Math.PI;
-  if (far > to) {
-    // Doesn't pass through farDir — flip
-    to -= 2 * Math.PI;
-    [from, to] = [to, from];
+  const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const lo = Math.min(norm(a1), norm(a2));
+  const hi = Math.max(norm(a1), norm(a2));
+  const far = norm(farDir);
+
+  // Two possible CCW arcs: [lo, hi] and [hi, lo+2π]
+  // Check which one contains far
+  if (lo <= far && far <= hi) {
+    return { from: lo, to: hi };
   }
-  return { from, to };
+  return { from: hi, to: lo + 2 * Math.PI };
 }
 
 function fallbackRing(
