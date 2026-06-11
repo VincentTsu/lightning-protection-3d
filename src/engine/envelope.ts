@@ -295,18 +295,15 @@ export function generateRodEnvelope(
   rod: LightningRod,
   segments: number = 32,
   heightSamples: number = 20,
-  startHeight: number = 0,
 ): EnvelopeGeometry {
   const vertices: [number, number, number][] = [];
   const indices: number[] = [];
-  const y0 = Math.max(0, Math.min(startHeight, rod.height));
 
-  // --- generate vertices: rings from y0 to top (y=rod.height) ---
-  const ringStart: number[] = []; // first vertex index of each ring
+  const ringStart: number[] = [];
 
   for (let s = 0; s <= heightSamples; s++) {
     const t = s / heightSamples;
-    const hz = y0 + t * (rod.height - y0);
+    const hz = t * rod.height;
     const r = protectionRadius(rod.height, hz);
 
     ringStart.push(vertices.length);
@@ -336,15 +333,13 @@ export function generateRodEnvelope(
     }
   }
 
-  // --- bottom cap (skip when clipped — abuts joint envelope) ---
-  if (y0 <= 1e-6) {
-    const bottomCenter = vertices.length;
-    vertices.push([rod.x, 0, rod.y]);
-    const bottomRing = ringStart[0];
-    for (let i = 0; i < segments; i++) {
-      const next = (i + 1) % segments;
-      indices.push(bottomCenter, bottomRing + next, bottomRing + i);
-    }
+  // --- bottom cap ---
+  const bottomCenter = vertices.length;
+  vertices.push([rod.x, 0, rod.y]);
+  const bottomRing = ringStart[0];
+  for (let i = 0; i < segments; i++) {
+    const next = (i + 1) % segments;
+    indices.push(bottomCenter, bottomRing + next, bottomRing + i);
   }
 
   // --- top cap (cone tip) ---
@@ -365,55 +360,6 @@ export function generateRodEnvelope(
   }
 
   return packGeometry(vertices, indices);
-}
-
-// ---------------------------------------------------------------------------
-// Joint envelope between two rods  (GB50064 折线法 — parabolic roof)
-// ---------------------------------------------------------------------------
-
-/**
- * Generate the 3D joint protection surface by stacking `generateJointRing`
- * cross-sections from y=0 to y=h0.
- */
-export function generateJointEnvelope(
-  rodA: LightningRod,
-  rodB: LightningRod,
-  ringVerts: number = 80,
-  heightSamples: number = 24,
-): EnvelopeGeometry | null {
-  const pair = equivalentJointPair(rodA, rodB);
-  if (!pair) return null;
-  const h0 = pair.h0;
-
-  const vertices: [number, number, number][] = [];
-  const indices: number[] = [];
-  const ringStart: number[] = [];
-
-  for (let s = 0; s <= heightSamples; s++) {
-    const y = (s / heightSamples) * h0;
-    const ring = generateJointRing(rodA, rodB, y, ringVerts);
-    ringStart.push(vertices.length);
-    if (ring) {
-      for (const v of ring) vertices.push(v);
-    } else {
-      // Degenerate ring at this height — use midpoint point repeated
-      const mx = (pair.rodA.x + pair.rodB.x) / 2;
-      const mz = (pair.rodA.y + pair.rodB.y) / 2;
-      for (let i = 0; i < ringVerts; i++) vertices.push([mx, y, mz]);
-    }
-  }
-
-  for (let s = 0; s < heightSamples; s++) {
-    const base = ringStart[s];
-    const top = ringStart[s + 1];
-    for (let i = 0; i < ringVerts; i++) {
-      const j = (i + 1) % ringVerts;
-      indices.push(base + i, top + i, top + j);
-      indices.push(base + i, top + j, base + j);
-    }
-  }
-
-  return vertices.length > 0 ? packGeometry(vertices, indices) : null;
 }
 
 // ---------------------------------------------------------------------------
