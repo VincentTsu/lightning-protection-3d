@@ -17,8 +17,8 @@ import { protectionWidth } from './wireCalc';
 export function generateJointRing(
   rodA: LightningRod,
   rodB: LightningRod,
-  y: number,           // height
-  ringVerts: number,   // desired vertex count
+  y: number,
+  ringVerts: number,
 ): [number, number, number][] | null {
   const pair = equivalentJointPair(rodA, rodB);
   if (!pair) return null;
@@ -37,85 +37,93 @@ export function generateJointRing(
   const nx = -uz, nz = ux;
   const baseAngle = Math.atan2(uz, ux);
 
-  // Midpoint and ±bx reference points
   const mx = (eqA.x + eqB.x) / 2, mz = (eqA.y + eqB.y) / 2;
-  const pLx = mx - bx * nx, pLz = mz - bx * nz; // P_L (−bx)
-  const pRx = mx + bx * nx, pRz = mz + bx * nz; // P_R (+bx)
+  const pLx = mx - bx * nx, pLz = mz - bx * nz;
+  const pRx = mx + bx * nx, pRz = mz + bx * nz;
 
-  // Tangent points from P_L and P_R to both circles
   const tAL = tangentsFromPoint(pLx, pLz, eqA.x, eqA.y, rx);
   const tBL = tangentsFromPoint(pLx, pLz, eqB.x, eqB.y, rx);
   const tAR = tangentsFromPoint(pRx, pRz, eqA.x, eqA.y, rx);
   const tBR = tangentsFromPoint(pRx, pRz, eqB.x, eqB.y, rx);
 
-  // Pick the outer tangent point for each (farther from the other rod)
-  const pick = (pair: [number, number][], cx: number, cz: number, ox: number, oz: number) => {
-    const d0 = (pair[0][0] - ox) ** 2 + (pair[0][1] - oz) ** 2;
-    const d1 = (pair[1][0] - ox) ** 2 + (pair[1][1] - oz) ** 2;
-    return d0 > d1 ? pair[0] : pair[1];
+  if (!tAL || !tBL || !tAR || !tBR) {
+    return arcLengthSampleRing(eqA, eqB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts, true);
+  }
+
+  const pick = (pts: [number, number][], ox: number, oz: number) => {
+    const d0 = (pts[0][0]-ox)**2+(pts[0][1]-oz)**2;
+    const d1 = (pts[1][0]-ox)**2+(pts[1][1]-oz)**2;
+    return d0 > d1 ? pts[0] : pts[1];
   };
 
-  // Fallback if any tangent computation fails (P inside circle)
-  if (!tAL || !tBL || !tAR || !tBR) return fallbackRing(eqA, eqB, rx, y, ux, uz, nx, nz, baseAngle, ringVerts);
+  const TA_L = pick(tAL, eqB.x, eqB.y);
+  const TB_L = pick(tBL, eqA.x, eqA.y);
+  const TA_R = pick(tAR, eqB.x, eqB.y);
+  const TB_R = pick(tBR, eqA.x, eqA.y);
 
-  const TA_L = pick(tAL, eqA.x, eqA.y, eqB.x, eqB.y);
-  const TB_L = pick(tBL, eqB.x, eqB.y, eqA.x, eqA.y);
-  const TA_R = pick(tAR, eqA.x, eqA.y, eqB.x, eqB.y);
-  const TB_R = pick(tBR, eqB.x, eqB.y, eqA.x, eqA.y);
-
-  // Build the ring: 6 segments
-  //   arc A  (TA_R → TA_L, far side)
-  //   tangent (TA_L → P_L → TB_L)
-  //   arc B  (TB_L → TB_R, far side)
-  //   tangent (TB_R → P_R → TA_R)
-
-  const arcVertsA = Math.max(6, Math.round(ringVerts * 0.3));
-  const arcVertsB = Math.max(6, Math.round(ringVerts * 0.3));
-  const straightVerts = Math.max(2, Math.round((ringVerts - arcVertsA - arcVertsB - 6) / 6));
-
-  const ring: [number, number, number][] = [];
-
-  // Arc A: TA_R → TA_L through far side
+  // --- 6 segments forming the closed ring ---
+  // 1) Arc A: TA_R → TA_L through far side
   const aAR = Math.atan2(TA_R[1] - eqA.y, TA_R[0] - eqA.x);
   const aAL = Math.atan2(TA_L[1] - eqA.y, TA_L[0] - eqA.x);
   const { from: afA, to: atA } = arcThroughFar(aAR, aAL, baseAngle + Math.PI);
-  for (let i = 0; i <= arcVertsA; i++) {
-    const a = afA + (atA - afA) * i / arcVertsA;
-    ring.push([eqA.x + rx * Math.cos(a), y, eqA.y + rx * Math.sin(a)]);
-  }
 
-  // Tangent: TA_L → P_L → TB_L
-  for (let i = 1; i <= straightVerts; i++) {
-    const t = i / (straightVerts + 1);
-    ring.push([TA_L[0] + (pLx - TA_L[0]) * t, y, TA_L[1] + (pLz - TA_L[1]) * t]);
-  }
-  ring.push([pLx, y, pLz]);
-  for (let i = 1; i <= straightVerts; i++) {
-    const t = i / (straightVerts + 1);
-    ring.push([pLx + (TB_L[0] - pLx) * t, y, pLz + (TB_L[1] - pLz) * t]);
-  }
-  ring.push([TB_L[0], y, TB_L[1]]);
-
-  // Arc B: TB_L → TB_R through far side
+  // 2) Tangent: TA_L → P_L
+  // 3) Tangent: P_L → TB_L
+  // 4) Arc B: TB_L → TB_R through far side
   const aBL = Math.atan2(TB_L[1] - eqB.y, TB_L[0] - eqB.x);
   const aBR = Math.atan2(TB_R[1] - eqB.y, TB_R[0] - eqB.x);
   const { from: afB, to: atB } = arcThroughFar(aBL, aBR, baseAngle);
-  for (let i = 0; i <= arcVertsB; i++) {
-    const a = afB + (atB - afB) * i / arcVertsB;
-    ring.push([eqB.x + rx * Math.cos(a), y, eqB.y + rx * Math.sin(a)]);
-  }
 
-  // Tangent: TB_R → P_R → TA_R
-  for (let i = 1; i <= straightVerts; i++) {
-    const t = i / (straightVerts + 1);
-    ring.push([TB_R[0] + (pRx - TB_R[0]) * t, y, TB_R[1] + (pRz - TB_R[1]) * t]);
+  // 5) Tangent: TB_R → P_R
+  // 6) Tangent: P_R → TA_R
+
+  // --- Compute segment lengths ---
+  const segLen = [
+    rx * Math.abs(atA - afA),                     // arc A
+    Math.hypot(TA_L[0]-pLx, TA_L[1]-pLz),         // TA_L → P_L
+    Math.hypot(pLx-TB_L[0], pLz-TB_L[1]),         // P_L → TB_L
+    rx * Math.abs(atB - afB),                     // arc B
+    Math.hypot(TB_R[0]-pRx, TB_R[1]-pRz),         // TB_R → P_R
+    Math.hypot(pRx-TA_R[0], pRz-TA_R[1]),         // P_R → TA_R
+  ];
+  const totalLen = segLen.reduce((a,b)=>a+b, 0);
+
+  // --- Point-at-distance helpers ---
+  const pointOnArc = (cx: number, cz: number, r: number, a0: number, da: number, dist: number) => {
+    const frac = da === 0 ? 0 : dist / (r * Math.abs(da));
+    const a = a0 + da * Math.min(1, frac);
+    return [cx + r * Math.cos(a), cz + r * Math.sin(a)] as [number, number];
+  };
+  const pointOnSeg = (x0: number, z0: number, x1: number, z1: number, len: number, dist: number) => {
+    const t = len === 0 ? 0 : Math.min(1, dist / len);
+    return [x0 + (x1-x0)*t, z0 + (z1-z0)*t] as [number, number];
+  };
+
+  // --- Sample ringVerts points uniformly along the perimeter (closed) ---
+  const ring: [number, number, number][] = [];
+  for (let i = 0; i < ringVerts; i++) {
+    const d = (totalLen * i) / (ringVerts - 1);
+    let acc = 0;
+    let px: number, pz: number;
+
+    // Segment 0: arc A
+    if (d < acc + segLen[0]) {
+      [px, pz] = pointOnArc(eqA.x, eqA.y, rx, afA, atA - afA, d - acc);
+    } else if (d < (acc += segLen[0]) + segLen[1]) {
+      [px, pz] = pointOnSeg(TA_L[0], TA_L[1], pLx, pLz, segLen[1], d - acc);
+    } else if (d < (acc += segLen[1]) + segLen[2]) {
+      [px, pz] = pointOnSeg(pLx, pLz, TB_L[0], TB_L[1], segLen[2], d - acc);
+    } else if (d < (acc += segLen[2]) + segLen[3]) {
+      [px, pz] = pointOnArc(eqB.x, eqB.y, rx, afB, atB - afB, d - acc);
+    } else if (d < (acc += segLen[3]) + segLen[4]) {
+      [px, pz] = pointOnSeg(TB_R[0], TB_R[1], pRx, pRz, segLen[4], d - acc);
+    } else {
+      const d2 = d - (acc + segLen[4]);
+      [px, pz] = pointOnSeg(pRx, pRz, TA_R[0], TA_R[1], segLen[5], Math.min(d2, segLen[5]));
+    }
+
+    ring.push([px, y, pz]);
   }
-  ring.push([pRx, y, pRz]);
-  for (let i = 1; i <= straightVerts; i++) {
-    const t = i / (straightVerts + 1);
-    ring.push([pRx + (TA_R[0] - pRx) * t, y, pRz + (TA_R[1] - pRz) * t]);
-  }
-  ring.push([TA_R[0], y, TA_R[1]]);
 
   return ring;
 }
@@ -158,21 +166,31 @@ function arcThroughFar(a1: number, a2: number, farDir: number) {
   return { from: hi, to: lo + 2 * Math.PI };
 }
 
-function fallbackRing(
-  rodA: LightningRod, rodB: LightningRod,
+/** Simple fallback: two separate circles with arc-length sampling */
+function arcLengthSampleRing(
+  _rodA: LightningRod, _rodB: LightningRod,
   rx: number, y: number,
-  ux: number, uz: number, _nx: number, _nz: number,
+  ux: number, uz: number, nx: number, nz: number,
   baseAngle: number, ringVerts: number,
+  _twoCircles: boolean,
 ): [number, number, number][] {
-  const half = Math.round(ringVerts / 2);
   const ring: [number, number, number][] = [];
-  for (let i = 0; i <= half; i++) {
-    const a = baseAngle + Math.PI / 2 + (Math.PI * i) / half;
-    ring.push([rodA.x + rx * Math.cos(a), y, rodA.y + rx * Math.sin(a)]);
-  }
-  for (let i = 0; i <= ringVerts - half - 1; i++) {
-    const a = baseAngle - Math.PI / 2 + (Math.PI * i) / (ringVerts - half - 1);
-    ring.push([rodB.x + rx * Math.cos(a), y, rodB.y + rx * Math.sin(a)]);
+  for (let i = 0; i < ringVerts; i++) {
+    const a = (2 * Math.PI * i) / ringVerts;
+    // Just draw full circles around both rods (they don't connect)
+    if (_twoCircles) {
+      // Alternate between the two circles to avoid seams
+      const half = Math.floor(ringVerts / 2);
+      if (i < half) {
+        const aa = (2 * Math.PI * i) / half;
+        ring.push([_rodA.x + rx * Math.cos(aa), y, _rodA.y + rx * Math.sin(aa)]);
+      } else {
+        const aa = (2 * Math.PI * (i - half)) / (ringVerts - half);
+        ring.push([_rodB.x + rx * Math.cos(aa), y, _rodB.y + rx * Math.sin(aa)]);
+      }
+    } else {
+      ring.push([_rodA.x + rx * Math.cos(a), y, _rodA.y + rx * Math.sin(a)]);
+    }
   }
   return ring;
 }
@@ -364,15 +382,11 @@ export function generateJointEnvelope(
     ringStart.push(vertices.length);
     if (ring) {
       for (const v of ring) vertices.push(v);
-    }
-    // Pad if ring returned fewer vertices
-    while (vertices.length - ringStart[s] < ringVerts) {
-      const last = vertices[vertices.length - 1] || [pair.rodA.x, y, pair.rodA.y] as [number, number, number];
-      vertices.push([last[0], last[1], last[2]]);
-    }
-    // Trim if too many
-    if (vertices.length - ringStart[s] > ringVerts) {
-      vertices.length = ringStart[s] + ringVerts;
+    } else {
+      // Degenerate ring at this height — use midpoint point repeated
+      const mx = (pair.rodA.x + pair.rodB.x) / 2;
+      const mz = (pair.rodA.y + pair.rodB.y) / 2;
+      for (let i = 0; i < ringVerts; i++) vertices.push([mx, y, mz]);
     }
   }
 
